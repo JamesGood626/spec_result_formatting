@@ -1,0 +1,9 @@
+name: spec_result_lexer
+version: 0.1.0
+
+authors:
+  - James Good <jamesgood626@gmail.com>
+
+crystal: 1.2.0
+
+license: MIT
