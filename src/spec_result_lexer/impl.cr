@@ -141,12 +141,12 @@ def starting_token_append_discrepancy(l1 : Lex, l2 : Lex)
     (l1.appended_to_starting_token != l2.appended_to_starting_token)
 end
 
-def determine_if_terminated(type_level : TypeLevel, first_char_of_str : String, int_terminating_chars : Array(String), func)
-    result = int_terminating_chars.map { |x| x.match(first_char_of_str) }.select { |x| x.is_a?(String) }
+def determine_if_terminated(l : Lex, type_level : TypeLevel, first_char_of_str : String, terminating_chars : Array(String), func)
+    result = terminating_chars.map { |x| x == first_char_of_str }.select { |x| x.is_a?(String) }
 
     if result.size > 0
-        self.ending_tokens.push(TokenEnd.new({type_level, ending_token}))
-        self.appended_ending_token = true
+        l.ending_tokens.push(TokenEnd.new({type_level, first_char_of_str}))
+        l.set_appended_ending_token()
     else
         func.call()
     end
@@ -192,7 +192,11 @@ struct TupleM < LexMode end
 struct ArrayM < LexMode end
 struct DictM < LexMode end
 struct ObjectM < LexMode end
-struct ProcLiteralM < LexMode end # #<Proc(String, Nil):0x109fac5d0> <- as printed in the spec results
+# TODO (may need to add another set of checks of when structs are printed the way TokeenStart is here...
+# In the sapphire project, when rtunning the specs for generate_state_map.cr the structs aren't printed starting with '#<'):
+# #<SpecResultLexer::TokenStart:0x10c3f5c30 @value={SpecResultLexer::DictM(), "{\"dict_key\"="}>
+# #<Proc(String, Nil):0x109fac5d0> <- as printed in the spec results
+struct ProcLiteralM < LexMode end
 
 # abstract struct PrimitiveType end
 # abstract struct CompoundType end
@@ -212,6 +216,8 @@ struct CompoundType < TypeLevel end
 class TokenStart
     @value : Tuple(LexMode, String)
 
+    getter value
+
     def initialize(@value) end
 
     def append(x : String)
@@ -225,6 +231,8 @@ end
 
 class TokenEnd
     @value : Tuple(TypeLevel, String)
+
+    getter value
 
     def initialize(@value) end
 end
@@ -251,6 +259,8 @@ class Lex
     @appended_to_starting_token : Bool
 
     getter remaining
+    getter starting_tokens
+    getter ending_tokens
     getter appended_starting_token
     getter appended_ending_token
     getter appended_to_starting_token
@@ -272,7 +282,7 @@ class Lex
 
         first_char_of_str = @remaining.shift()
 
-        if @starting_lexed.size == 0
+        if @starting_tokens.size == 0
             mode = determine_mode(first_char_of_str)
             
             if mode == nil
@@ -280,6 +290,14 @@ class Lex
                 self.append_to_last_starting_token(first_char_of_str)
                 @appended_to_starting_token = true
             else
+                # LLO/WTF... THis annoying error again,
+                # In src/spec_result_lexer/impl.cr:221:20
+
+                # 221 | def initialize(@value) end
+                #       ^-----
+                # Error: instance variable '@value' of SpecResultLexer::TokenStart must be Tuple(SpecResultLexer::LexMode, String), not Tuple(SpecResultLexer::LexMode | Nil, String)
+
+                # Using TupleM.new() in place of mode fixes the error and makes the tests pass...
                 @starting_tokens.push(TokenStart.new({mode, first_char_of_str}))
                 @appended_starting_token = true
             end
@@ -287,9 +305,10 @@ class Lex
             return
         end
 
+        # puts typeof(@starting_tokens)
         # INVARIANTS:
         # - mode should NEVER be nil
-        mode, last_starting_token = @starting_tokens.pop()
+        mode, last_starting_token = @starting_tokens[-1].value
 
         # There's another comment above about this.
         # When the Mode=TupleM, it's reasonable to assume that if a '=' is encountered that it's safe to set mode to DictM
@@ -305,10 +324,12 @@ class Lex
         when StringM
             string_terminating_chars = ["\""] # edge case: What if it's an escaped double quotation within a larger String?
 
-            result = string_terminating_chars.map { |x| x.match(first_char_of_str) }.select { |x| x.is_a?(String) }
+            result = string_terminating_chars.map { |x| x == first_char_of_str }.select { |x| x.is_a?(String) }
             
             if result.size > 0
-                @ending_tokens.push(TokenEnd.new({Primitive.new(), ending_token}))
+                # IMMEDIATE TODO: Where tf is ending_token coming from?
+                # ^^ Test the lex method!
+                @ending_tokens.push(TokenEnd.new({PrimitiveType.new(), first_char_of_str}))
                 @appended_ending_token = true
             else
                 self.append_to_last_starting_token(first_char_of_str)
@@ -326,7 +347,7 @@ class Lex
             }
 
             # An attempt to reduce duplication
-            determine_if_terminated(Primitive.new(), first_char_of_str, int_terminating_chars, f)
+            determine_if_terminated(self, PrimitiveType.new(), first_char_of_str, int_terminating_chars, f)
 
             # result = int_terminating_chars.map { |x| x.match(first_char_of_str) }.select { |x| x.is_a?(String) }
             
@@ -359,7 +380,7 @@ class Lex
             }
 
             # An attempt to reduce duplication
-            determine_if_terminated(Primitive.new(), first_char_of_str, tuple_terminating_chars, f)
+            determine_if_terminated(self, PrimitiveType.new(), first_char_of_str, tuple_terminating_chars, f)
 
             # result = tuple_terminating_chars.map { |x| x.match(first_char_of_str) }.select { |x| x.is_a?(String) }
             
@@ -379,10 +400,10 @@ class Lex
         when DictM
             dict_terminating_chars = ["}"] # [" ", "\n", ","] <- These are actually the case which should just be appended to the end of a TokenStart
 
-            result = dict_terminating_chars.map { |x| x.match(first_char_of_str) }.select { |x| x.is_a?(String) }
+            result = dict_terminating_chars.map { |x| x == first_char_of_str }.select { |x| x.is_a?(String) }
             
             if result.size > 0
-                @ending_tokens.push(TokenEnd.new({Compound.new(), ending_token}))
+                @ending_tokens.push(TokenEnd.new({CompoundType.new(), first_char_of_str}))
                 @appended_ending_token = true
             else
                 self.append_to_last_starting_token(first_char_of_str)
@@ -400,7 +421,7 @@ class Lex
 
     def update_last_starting_token_mode(m : LexMode)
         last_token = @starting_tokens.pop()
-        last_token.update_mode(x)
+        last_token.update_mode(m)
         @starting_tokens.push(last_token)
     end
 
@@ -408,6 +429,10 @@ class Lex
         last_token = @starting_tokens.pop()
         last_token.append(x)
         @starting_tokens.push(last_token)
+    end
+
+    def set_appended_ending_token()
+        @appended_ending_token = true
     end
 
     def reset_appended_starting_token_bool()
@@ -428,8 +453,8 @@ class DetectExpectationDiscrepancies
     getter got
 
     def initialize(expected : String, got : String)
-        @expected = Lex.new(Expected, string_to_characters(expected))
-        @got = Lex.new(Got, string_to_characters(got))
+        @expected = Lex.new(Expected.new(), string_to_characters(expected))
+        @got = Lex.new(Got.new(), string_to_characters(got))
     end
 
     # "the controlling function" as referred to in the comments above.
