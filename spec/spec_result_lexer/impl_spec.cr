@@ -50,16 +50,24 @@ describe "auxiliary functions" do
     end
 end
 
-# describe "DetectExpectationDiscrepancies class" do
-#   it "can detect and color discrepancies when given two dicts" do
-#     expected = "{\"name\" => \"James\"}"
-#     got = "{\"name\" => \"Joseph\"}"
+describe "DetectExpectationDiscrepancies class" do
+  # Get this working for all other data structures.... then this can be finished.
+  it "can detect and color discrepancies when given two dicts" do
+    expected = "{\"name\" => \"James\"}"
+    got = "{\"name\" => \"Joseph\"}"
 
-#     l = DetectExpectationDiscrepancies.new(expected, got)
+    l = DetectExpectationDiscrepancies.new(expected, got)
 
-#     l.should eq("BOOM")
-#   end
-# end
+    # 6.times do
+    #   l.lex()
+    # end
+
+    result = l.detect()
+    expected_result = {"\e[32m{\"name\" => \"Ja\e[0m\e[32mmes\"}\e[0m", "\e[32m{\"name\" => \"J\e[0m\e[31mo\e[0m\e[31mseph\"}\e[0m"}
+
+    result.should eq(expected_result)
+  end
+end
 
 # Might be an issue...
 # l.starting_tokens.should eq("BOOM") where l : Lex

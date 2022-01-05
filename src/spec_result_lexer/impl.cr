@@ -37,6 +37,8 @@
 # Solid discussion on the Result Monad and Error Handling
 # https://forum.crystal-lang.org/t/result-monad-discussion/1846/16?u=jamesgood626
 
+require "colorize"
+
 module SpecResultLexer
 # extend self
 
@@ -125,11 +127,12 @@ end
 
 def invoke_lex_on_expected_and_got(expected : Lex, got : Lex) : Bool?
     # If this is true then the lex will stop and the remainder of the got string will be colored red.
-    if (@expected.remaining.size == 0 && @got.remaining.size == 0)
+    if (expected.remaining.size == 0 || got.remaining.size == 0)
         true
     else
         expected.lex()
         got.lex()
+        nil
     end
 end
 
@@ -138,11 +141,19 @@ def starting_or_ending_token_discrepancy(l1 : Lex, l2 : Lex)
 end
 
 def starting_token_append_discrepancy(l1 : Lex, l2 : Lex)
-    (l1.appended_to_starting_token != l2.appended_to_starting_token)
+    # puts "l1.appended_to_starting_token: #{l1.appended_to_starting_token} when last TokenStart = #{l1.starting_tokens}"
+    # puts "l2.appended_to_starting_token: #{l2.appended_to_starting_token} when last TokenStart = #{l2.starting_tokens}"
+    # (l1.appended_to_starting_token != l2.appended_to_starting_token)
+    # ^^ And those two puts made me realize how erroneous this logic was (I mean I was just writing it without testing at the time)
+    if (l1.appended_to_starting_token && l2.appended_to_starting_token)
+        l1.get_last_starting_token_str != l2.get_last_starting_token_str
+    else
+        false
+    end
 end
 
 def determine_if_terminated(l : Lex, type_level : TypeLevel, first_char_of_str : String, terminating_chars : Array(String), func)
-    result = terminating_chars.map { |x| x == first_char_of_str }.select { |x| x.is_a?(String) }
+    result = terminating_chars.map { |x| x == first_char_of_str }.select { |x| x }
 
     if result.size > 0
         l.ending_tokens.push(TokenEnd.new({type_level, first_char_of_str}))
@@ -160,19 +171,27 @@ end
 # Other idea instead of the lex_type to establish the distinction....
 # pass in an optional lambda function, which will handle the colorization
 # ^^ Like this idea/API better
-def abort_detect_process(l : Lex)
+def abort_detect_process(l : Lex) : String
+    x = l.append_all_tokens()
+
     case l.lex_type
     when Expected
-        # 1. append all of the strings contained in the Array(TokenEnd)
-        # 2. append all of the strings contained in the Array(TokenStart)
-        # 3. x = "#{appended_token_start_str}#{appended_token_end_str}"
         # 4. "#{x}#{remaining}" 
+        "#{x.colorize(:green)}#{l.get_remaining_as_str().colorize(:green)}"
     when Got
-        # 1. append all of the strings contained in the Array(TokenEnd)
-        # 2. append all of the strings contained in the Array(TokenStart)
-        # 3. x = "#{appended_token_start_str}#{appended_token_end_str}"
-        # 4. "#{x}#{remaining}" <- .colorize(:red) if it's the @got lex...
-    end
+        # Clunky... but just need to get the last character which caused the error into the red text.
+        y = x[0..-2]
+        z = x[-1]
+        
+        "#{y.colorize(:green)}#{z.colorize(:red)}#{l.get_remaining_as_str().colorize(:red)}"
+    end.as(String)
+
+    # ^^ NOTE:
+    # You would get the following error if you omitted the .as(String)
+    # In src/spec_result_lexer/impl.cr:172:37
+    # 172 | def abort_detect_process(l : Lex) : String
+    #                                           ^-----
+    # Error: method top-level abort_detect_process must return String but it is returning (String | Nil)
 end
 
 # abstract struct StringM end
@@ -227,6 +246,10 @@ class TokenStart
     def update_mode(m : LexMode)
         @value = {m, @value[1]}
     end
+
+    def unwrap_str()
+        @value[1]
+    end
 end
 
 class TokenEnd
@@ -235,6 +258,10 @@ class TokenEnd
     getter value
 
     def initialize(@value) end
+
+    def unwrap_str()
+        @value[1]
+    end
 end
 
 # DOESN'T WORK:
@@ -258,6 +285,7 @@ class Lex
     @appended_ending_token : Bool
     @appended_to_starting_token : Bool
 
+    getter lex_type
     getter remaining
     getter starting_tokens
     getter ending_tokens
@@ -285,19 +313,15 @@ class Lex
         if @starting_tokens.size == 0
             mode = determine_mode(first_char_of_str)
             
-            if mode == nil
+            # Mistakenly tried using mode == nil before, but that doesn't remove Nil from the Union,
+            # which causes an error when attempting to pass mode as the first element of the tuple to TokenStart.new inside
+            # the else block:
+            # https://forum.crystal-lang.org/t/checking-a-nillable-type-prior-to-passing-it-to-a-function-which-expects-it-to-not-be-nil/4085/9?u=jamesgood626
+            if mode.nil?
                 # In the case that some character which isn't a syntax character for a given context (StringM, DictM, etc) is encountered.
                 self.append_to_last_starting_token(first_char_of_str)
                 @appended_to_starting_token = true
             else
-                # LLO/WTF... THis annoying error again,
-                # In src/spec_result_lexer/impl.cr:221:20
-
-                # 221 | def initialize(@value) end
-                #       ^-----
-                # Error: instance variable '@value' of SpecResultLexer::TokenStart must be Tuple(SpecResultLexer::LexMode, String), not Tuple(SpecResultLexer::LexMode | Nil, String)
-
-                # Using TupleM.new() in place of mode fixes the error and makes the tests pass...
                 @starting_tokens.push(TokenStart.new({mode, first_char_of_str}))
                 @appended_starting_token = true
             end
@@ -442,6 +466,42 @@ class Lex
     def reset_appended_ending_token_bool()
         @appended_ending_token = false
     end
+
+    def reset_appended_booleans()
+        @appended_starting_token = false
+        @appended_ending_token = false
+        @appended_to_starting_token = false
+    end
+
+    def get_last_starting_token_str()
+        @starting_tokens[-1].unwrap_str
+    end
+
+    def get_remaining_as_str()
+        @remaining.join()
+    end
+
+    def append_all_ending_tokens()
+        if @ending_tokens.size != 0
+            @ending_tokens.reduce("") { |acc, x| "#{acc}#{x.unwrap_str()}" }
+        else
+            ""
+        end
+    end
+
+    def append_all_starting_tokens()
+        if @starting_tokens.size != 0
+            @starting_tokens.reduce("") { |acc, x| "#{acc}#{x.unwrap_str()}" }
+        else
+            ""
+        end
+    end
+
+    def append_all_tokens() : String
+        appended_ending_token_str = self.append_all_ending_tokens()
+        appended_starting_token_str = self.append_all_starting_tokens()
+        "#{appended_starting_token_str}#{appended_ending_token_str}"
+    end
 end
 
 class DetectExpectationDiscrepancies
@@ -458,7 +518,7 @@ class DetectExpectationDiscrepancies
     end
 
     # "the controlling function" as referred to in the comments above.
-    def detect : Tuple(String, String)
+    def detect : Tuple(String, String)? # If it returns nil then there were no errors (just use the original strings for the spec result output)
         remaining_do_not_match = false
 
         loop do
@@ -474,6 +534,8 @@ class DetectExpectationDiscrepancies
             # ... any other steps between?
 
             # 3. reset the booleans
+            @expected.reset_appended_booleans()
+            @got.reset_appended_booleans()
         end
 
         if remaining_do_not_match
@@ -481,8 +543,6 @@ class DetectExpectationDiscrepancies
             got = abort_detect_process(@got)
 
             return {expected, got}
-        else
-
         end
     end
 
@@ -509,4 +569,7 @@ end
 
 #     ...
 # end
+
+# ^^ Ahhh... potentially could've used that to index the TokenStart and delegate to @value
+# delegate [], to: @value
 end
